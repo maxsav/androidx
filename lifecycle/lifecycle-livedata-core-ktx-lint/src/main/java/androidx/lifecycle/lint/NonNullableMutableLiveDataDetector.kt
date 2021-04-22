@@ -26,22 +26,31 @@ import com.android.tools.lint.detector.api.JavaContext
 import com.android.tools.lint.detector.api.LintFix
 import com.android.tools.lint.detector.api.Scope
 import com.android.tools.lint.detector.api.Severity
-import com.android.tools.lint.detector.api.UastLintUtils
+import com.android.tools.lint.detector.api.UastLintUtils.Companion.tryResolveUDeclaration
 import com.android.tools.lint.detector.api.isKotlin
-import com.intellij.psi.PsiClassType
-import com.intellij.psi.PsiVariable
+import com.intellij.openapi.components.ServiceManager
+import com.intellij.psi.PsiElement
+import org.jetbrains.kotlin.psi.KtBinaryExpression
 import org.jetbrains.kotlin.psi.KtCallExpression
-import org.jetbrains.kotlin.psi.KtNullableType
+import org.jetbrains.kotlin.psi.KtDeclaration
+import org.jetbrains.kotlin.psi.KtExpression
 import org.jetbrains.kotlin.psi.KtTypeReference
+import org.jetbrains.kotlin.resolve.BindingContext
+import org.jetbrains.kotlin.types.KotlinType
+import org.jetbrains.kotlin.types.typeUtil.TypeNullability
+import org.jetbrains.kotlin.types.typeUtil.getImmediateSuperclassNotAny
+import org.jetbrains.kotlin.types.typeUtil.nullability
 import org.jetbrains.uast.UAnnotated
 import org.jetbrains.uast.UCallExpression
-import org.jetbrains.uast.UClass
 import org.jetbrains.uast.UElement
+import org.jetbrains.uast.UExpression
 import org.jetbrains.uast.UReferenceExpression
-import org.jetbrains.uast.getUastParentOfType
+import org.jetbrains.uast.UastCallKind
 import org.jetbrains.uast.isNullLiteral
-import org.jetbrains.uast.kotlin.KotlinUField
+import org.jetbrains.uast.kotlin.KotlinAbstractUExpression
+import org.jetbrains.uast.kotlin.KotlinUFunctionCallExpression
 import org.jetbrains.uast.kotlin.KotlinUSimpleReferenceExpression
+import org.jetbrains.uast.kotlin.KotlinUastResolveProviderService
 import org.jetbrains.uast.resolveToUElement
 
 /**
@@ -72,128 +81,87 @@ class NonNullableMutableLiveDataDetector : Detector(), UastScanner {
         )
     }
 
-    val typesMap = HashMap<String, KtTypeReference>()
-
     val methods = listOf("setValue", "postValue")
 
     override fun getApplicableUastTypes(): List<Class<out UElement>>? {
-        return listOf(UCallExpression::class.java, UClass::class.java)
+        return listOf(UCallExpression::class.java)
     }
 
     override fun createUastHandler(context: JavaContext): UElementHandler? {
         return object : UElementHandler() {
-            override fun visitClass(node: UClass) {
-                for (element in node.uastDeclarations) {
-                    if (element is KotlinUField) {
-                        getFieldTypeReference(element)?.let {
-                            // map the variable name to the type reference of its expression.
-                            typesMap.put(element.name, it)
-                        }
-                    }
-                }
-            }
-
-            private fun getFieldTypeReference(element: KotlinUField): KtTypeReference? {
-                // We need to extract type from the expression
-                // Given the field `val liveDataField = MutableLiveData<Boolean>()`
-                // expression: `MutableLiveData<Boolean>()`
-                // argument: `Boolean`
-                val expression = element.sourcePsi
-                    ?.children
-                    ?.firstOrNull { it is KtCallExpression } as? KtCallExpression
-                val argument = expression?.typeArguments?.singleOrNull()
-                return argument?.typeReference
-            }
 
             override fun visitCallExpression(node: UCallExpression) {
-                if (!isKotlin(node.sourcePsi) || !methods.contains(node.methodName) ||
-                    !context.evaluator.isMemberInSubClassOf(
-                            node.resolve()!!, "androidx.lifecycle.LiveData", false
-                        )
+                val isSupportedMethod = methods.contains(node.methodName) ||
+                    node.kind == UastCallKind.CONSTRUCTOR_CALL
+                if (!isKotlin(node.sourcePsi) || !isSupportedMethod) return
+
+                val calledMethod = node.resolve() ?: return
+
+                if (!context.evaluator.isMemberInSubClassOf(
+                        calledMethod,
+                        "androidx.lifecycle.LiveData", false
+                    )
                 ) return
 
-                val receiverType = node.receiverType as? PsiClassType
-                var liveDataType =
-                    if (receiverType != null && receiverType.hasParameters()) {
-                        val receiver =
-                            (node.receiver as? KotlinUSimpleReferenceExpression)?.resolve()
-                        val variable = (receiver as? PsiVariable)
-                        val assignment = variable?.let {
-                            UastLintUtils.findLastAssignment(it, node)
-                        }
-                        val constructorExpression = assignment?.sourcePsi as? KtCallExpression
-                        constructorExpression?.typeArguments?.singleOrNull()?.typeReference
-                    } else {
-                        getTypeArg(receiverType)
-                    }
-                if (liveDataType == null) {
-                    liveDataType = typesMap[getVariableName(node)] ?: return
-                }
-                checkNullability(liveDataType, context, node)
-            }
-
-            private fun getVariableName(node: UCallExpression): String? {
-                // We need to get the variable this expression is being assigned to
-                // Given the assignment `liveDataField.value = null`
-                // node.sourcePsi : `value`
-                // dot: `.`
-                // variable: `liveDataField`
-                val dot = node.sourcePsi?.prevSibling
-                val variable = dot?.prevSibling?.firstChild
-                return variable?.text
+                checkMethod(context, node)
             }
         }
     }
 
-    /**
-     * Iterates [classType]'s hierarchy to find its [androidx.lifecycle.LiveData] value type.
-     *
-     * @param classType The [PsiClassType] to search
-     * @return The LiveData type argument.
-     */
-    fun getTypeArg(classType: PsiClassType?): KtTypeReference? {
-        if (classType == null) {
-            return null
-        }
-        val cls = classType.resolve().getUastParentOfType<UClass>()
-        val parentPsiType = cls?.superClassType as PsiClassType
-        if (parentPsiType.hasParameters()) {
-            val parentTypeReference = cls.uastSuperTypes[0]
-            val superType = (parentTypeReference.sourcePsi as KtTypeReference).typeElement
-            return superType!!.typeArgumentsAsTypes[0]
-        }
-        return getTypeArg(parentPsiType)
+    internal fun checkMethod(context: JavaContext, node: UCallExpression) {
+        val receiver = getReceiver(node)
+        val declaration = getDeclaration(receiver)
+
+        val sourcePsi = receiver?.sourcePsi as? KtExpression ?: return
+
+        val bindingContext = ServiceManager.getService(
+            sourcePsi.project,
+            KotlinUastResolveProviderService::class.java
+        )?.getBindingContext(sourcePsi)!!
+        val type = bindingContext.getType(sourcePsi) ?: return
+
+        val genericType = getGenericType(type) ?: return
+
+        checkNullability(declaration, genericType, context, node)
     }
 
-    fun checkNullability(
-        liveDataType: KtTypeReference,
+    private fun checkNullability(
+        declaration: KtTypeReference?,
+        genericType: KotlinType,
         context: JavaContext,
-        node: UCallExpression
+        node: UCallExpression,
     ) {
-        if (liveDataType.typeElement !is KtNullableType) {
+        if (genericType.nullability() == TypeNullability.NOT_NULL) {
             val fixes = mutableListOf<LintFix>()
-            if (context.getLocation(liveDataType).file == context.file) {
-                // Quick Fixes can only be applied to current file
+            if (declaration != null) {
                 fixes.add(
                     fix().name("Change `LiveData` type to nullable")
-                        .replace().with("?").range(context.getLocation(liveDataType)).end().build()
+                        .replace().with("?").range(context.getLocation(declaration)).end()
+                        .build()
                 )
             }
-            val argument = node.valueArguments[0]
-            if (argument.isNullLiteral()) {
-                // Don't report null!! quick fix.
-                checkNullability(
-                    context,
-                    argument,
-                    "Cannot set non-nullable LiveData value to `null`",
-                    fixes
-                )
-            } else if (argument.isNullable()) {
-                fixes.add(
-                    fix().name("Add non-null asserted (!!) call")
-                        .replace().with("!!").range(context.getLocation(argument)).end().build()
-                )
-                checkNullability(context, argument, "Expected non-nullable value", fixes)
+            val argument = node.valueArguments.firstOrNull() ?: return
+            when {
+                argument.isNullLiteral() -> {
+                    // Don't report null!! quick fix.
+                    checkNullability(
+                        context,
+                        argument,
+                        "Cannot set non-nullable LiveData value to `null`",
+                        fixes
+                    )
+                }
+                argument.isNullable() -> {
+                    fixes.add(
+                        fix().name("Add non-null asserted (!!) call")
+                            .replace().with("!!").range(context.getLocation(argument)).end().build()
+                    )
+                    checkNullability(context, argument, "Expected non-nullable value", fixes)
+                }
+                argument.sourcePsi.isNullable() -> {
+                    // Don't report !! quick fix for expression.
+                    checkNullability(context, argument, "Expected non-nullable value", fixes)
+                }
             }
         }
     }
@@ -210,7 +178,7 @@ class NonNullableMutableLiveDataDetector : Detector(), UastScanner {
         context: JavaContext,
         element: UElement,
         message: String,
-        fixes: List<LintFix>
+        fixes: List<LintFix>,
     ) {
         if (fixes.isEmpty()) {
             context.report(ISSUE, context.getLocation(element), message)
@@ -221,11 +189,61 @@ class NonNullableMutableLiveDataDetector : Detector(), UastScanner {
             )
         }
     }
+
+    /**
+     * Iterates [type]'s hierarchy to find its [androidx.lifecycle.LiveData] value type.
+     *
+     * @param type The [KotlinType] to search
+     * @return The LiveData type argument.
+     */
+    private fun getGenericType(type: KotlinType): KotlinType? {
+        return type.arguments.singleOrNull()?.type
+            ?: type.getImmediateSuperclassNotAny()?.let(::getGenericType)
+    }
+
+    /**
+     * If the node does not have a receiver, try fetching via
+     * [KotlinUSimpleReferenceExpression.KotlinAccessorCallExpression]. For example
+     * `liveData.apply { value = null }`
+     *
+     * @param node The [UCallExpression] to search
+     * @return receiver of expression
+     */
+    private fun getReceiver(node: UCallExpression): UExpression? {
+        val receiver = node.receiver
+        if (receiver != null) {
+            return receiver
+        }
+        if (node is KotlinUSimpleReferenceExpression.KotlinAccessorCallExpression) {
+            var parent: UElement? = node.uastParent
+            while (parent != null) {
+                if (parent is KotlinUFunctionCallExpression) {
+                    return parent.receiver
+                }
+                parent = parent.uastParent
+            }
+        }
+        return null
+    }
+
+    /**
+     * Try fetching via field declaration.
+     *
+     * @param receiver The [UElement] to search
+     * @return receiver of expression
+     */
+    private fun getDeclaration(receiver: UElement?): KtTypeReference? {
+        return (receiver?.tryResolveUDeclaration()?.sourcePsi as? KtDeclaration)?.let {
+            val expression = it
+                .children.firstOrNull { it is KtCallExpression } as? KtCallExpression
+            expression?.typeArguments?.singleOrNull()?.typeReference
+        }
+    }
 }
 
 /**
  * Checks if the [UElement] is nullable. Always returns `false` if the [UElement] is not a
- * [UReferenceExpression] or [UCallExpression].
+ * [KotlinAbstractUExpression] or [UCallExpression].
  *
  * @return `true` if instance is nullable, `false` otherwise.
  */
@@ -235,6 +253,44 @@ internal fun UElement.isNullable(): Boolean {
         return psiMethod.hasAnnotation(NULLABLE_ANNOTATION)
     } else if (this is UReferenceExpression) {
         return (resolveToUElement() as? UAnnotated)?.findAnnotation(NULLABLE_ANNOTATION) != null
+    }
+    return false
+}
+
+internal fun PsiElement?.isNullable(): Boolean {
+    return (this as? KtExpression)?.isNullable() == true
+}
+
+/**
+ * @return `true` if expression type is nullable, `false` if expression type is flexible or
+ * not-null.
+ */
+internal fun KtExpression.isNullable(bindingContext: BindingContext? = null): Boolean {
+    val context = bindingContext ?: ServiceManager.getService(
+        this.project,
+        KotlinUastResolveProviderService::class.java
+    )?.getBindingContext(this) ?: return false
+    val type = context.getType(this) ?: return false
+    val nullability = type.nullability()
+    if (nullability == TypeNullability.NULLABLE) {
+        return true
+    }
+    if (nullability == TypeNullability.NOT_NULL) {
+        return false
+    }
+
+    val call = context[BindingContext.CALL, this]
+        ?: run {
+            // Check elvis expression
+            val operationReference = (this as? KtBinaryExpression)?.operationReference
+            context[BindingContext.CALL, operationReference]
+        }
+        ?: return false
+    val args = call.valueArguments
+    args.forEach {
+        if (it.getArgumentExpression()?.isNullable(context) == true) {
+            return true
+        }
     }
     return false
 }

@@ -314,7 +314,14 @@ src/com/example/test.kt:9: Error: Cannot set non-nullable LiveData value to null
                 }
             """
             ).indented()
-        ).expectClean()
+        ).expect(
+            """
+src/com/example/MyClass.kt:6: Error: Cannot set non-nullable LiveData value to null [NullSafeMutableLiveData]
+    val liveDataField = MutableLiveData<Boolean>().apply { value = null }
+                                                                   ~~~~
+1 errors, 0 warnings
+        """
+        )
     }
 
     @Test
@@ -418,7 +425,10 @@ Fix for src/com/example/test.kt line 7: Change `LiveData` type to nullable:
 
                 class MyLiveData : MyLiveData2()
                 open class MyLiveData2 : GenericLiveData<Boolean>()
-                open class GenericLiveData<T> : MutableLiveData<T>()
+                open class GenericLiveData<T> : MutableLiveData<T> {
+                    constructor() : this()
+                    constructor(value: T): this(value)
+                }
             """
             ).indented()
         ).expect(
@@ -743,6 +753,423 @@ Fix for src/com/example/MyClass2.kt line 30: Change `LiveData` type to nullable:
     }
 
     @Test
+    fun ifExpressionTest() {
+        check(
+            kotlin(
+                """
+                package com.example
+
+                import androidx.lifecycle.MutableLiveData
+
+                class MyClass2
+
+                class MyClass1 {
+                    val firstLiveDataField = MutableLiveData<MyClass2>()
+                    val secondLiveDataField = MutableLiveData<MyClass2?>()
+
+                    fun foo() {
+                        var bar: MyClass2? = MyClass2() 
+                        firstLiveDataField.value = if (true) MyClass2() else MyClass2()
+                        firstLiveDataField.value = if (true) MyClass2() else null
+                        firstLiveDataField.value = if (true) null else MyClass2()
+                        firstLiveDataField.value = if (true) MyClass2() else bar
+                        firstLiveDataField.value = if (true) {
+                            MyClass2()
+                        } else if (true) {
+                            bar
+                        } else {
+                            MyClass2()
+                        }
+                        firstLiveDataField.value = if (true) {
+                            MyClass2()
+                        } else if (true) {
+                            ""+""
+                            MyClass2()
+                        } else {
+                            MyClass2()
+                        }
+                        firstLiveDataField.value = MyClass2()?.takeIf { false }
+                        firstLiveDataField.value = MyClass2()?.takeIf { true }
+
+                        secondLiveDataField.value = if (true) MyClass2() else MyClass2()
+                        secondLiveDataField.value = if (true) MyClass2() else null
+                        secondLiveDataField.value = if (true) MyClass2() else bar
+                        secondLiveDataField.value = MyClass2()?.takeIf { false }
+                        secondLiveDataField.value = MyClass2()?.takeIf { true }
+
+                        var strings = listOf("foo")
+                        firstLiveDataField.value = if (strings.contains("foo")) MyClass2() else MyClass2()
+                    }
+                }
+            """
+            ).indented()
+        ).expect(
+            """
+src/com/example/MyClass2.kt:14: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = if (true) MyClass2() else null
+                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/com/example/MyClass2.kt:15: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = if (true) null else MyClass2()
+                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/com/example/MyClass2.kt:16: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = if (true) MyClass2() else bar
+                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/com/example/MyClass2.kt:17: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = if (true) {
+                                   ^
+src/com/example/MyClass2.kt:32: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = MyClass2()?.takeIf { false }
+                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/com/example/MyClass2.kt:33: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = MyClass2()?.takeIf { true }
+                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+6 errors, 0 warnings
+        """
+        ).expectFixDiffs(
+            """
+Fix for src/com/example/MyClass2.kt line 14: Change `LiveData` type to nullable:
+@@ -8 +8
+-     val firstLiveDataField = MutableLiveData<MyClass2>()
++     val firstLiveDataField = MutableLiveData<MyClass2?>()
+Fix for src/com/example/MyClass2.kt line 15: Change `LiveData` type to nullable:
+@@ -8 +8
+-     val firstLiveDataField = MutableLiveData<MyClass2>()
++     val firstLiveDataField = MutableLiveData<MyClass2?>()
+Fix for src/com/example/MyClass2.kt line 16: Change `LiveData` type to nullable:
+@@ -8 +8
+-     val firstLiveDataField = MutableLiveData<MyClass2>()
++     val firstLiveDataField = MutableLiveData<MyClass2?>()
+Fix for src/com/example/MyClass2.kt line 17: Change `LiveData` type to nullable:
+@@ -8 +8
+-     val firstLiveDataField = MutableLiveData<MyClass2>()
++     val firstLiveDataField = MutableLiveData<MyClass2?>()
+Fix for src/com/example/MyClass2.kt line 32: Change `LiveData` type to nullable:
+@@ -8 +8
+-     val firstLiveDataField = MutableLiveData<MyClass2>()
++     val firstLiveDataField = MutableLiveData<MyClass2?>()
+Fix for src/com/example/MyClass2.kt line 33: Change `LiveData` type to nullable:
+@@ -8 +8
+-     val firstLiveDataField = MutableLiveData<MyClass2>()
++     val firstLiveDataField = MutableLiveData<MyClass2?>()
+        """
+        )
+    }
+
+    @Test
+    fun whenExpressionTest() {
+        check(
+            kotlin(
+                """
+                package com.example
+
+                import androidx.lifecycle.MutableLiveData
+
+                class MyClass2
+
+                class MyClass1 {
+                    val firstLiveDataField = MutableLiveData<MyClass2>()
+                    val secondLiveDataField = MutableLiveData<MyClass2?>()
+
+                    fun foo() {
+                        var str: String? = "bar"
+                        firstLiveDataField.value = when(str) {
+                            "foo" -> MyClass2()
+                            "bar" -> null
+                            else -> MyClass2()
+                        }
+                        firstLiveDataField.postValue(
+                            when(str) {
+                                "foo" -> MyClass2()
+                                "bar" -> null
+                                else -> MyClass2()
+                            }.apply { this }
+                        )
+                        firstLiveDataField.postValue(
+                            when(str) {
+                                "foo" -> MyClass2()
+                                "bar" -> null
+                                else -> MyClass2()
+                            }.also { }
+                        )
+                        firstLiveDataField.value = when(str) {
+                            "foo" -> MyClass2()
+                            else -> MyClass2()
+                        }
+
+                        firstLiveDataField.value = when {
+                            str?.substring(0) == "bar" -> MyClass2()
+                            str?.substring(0) == "ar" -> MyClass2()
+                            str?.substring(0) == "r" -> MyClass2()
+                            else -> MyClass2()
+                        }
+
+                        secondLiveDataField.value = when(str) {
+                            "foo" -> MyClass2()
+                            "bar" -> null
+                            else -> MyClass2()
+                        }
+                        secondLiveDataField.postValue(
+                            when(str) {
+                                "foo" -> MyClass2()
+                                "bar" -> null
+                                else -> MyClass2()
+                            }.apply { this }
+                        )
+                        secondLiveDataField.value = when(str) {
+                            "foo" -> MyClass2()
+                            else -> MyClass2()
+                        }
+                    }
+                }
+            """
+            ).indented()
+        ).expect(
+            """
+src/com/example/MyClass2.kt:13: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = when(str) {
+                                   ^
+src/com/example/MyClass2.kt:19: Error: Expected non-nullable value [NullSafeMutableLiveData]
+            when(str) {
+            ^
+src/com/example/MyClass2.kt:26: Error: Expected non-nullable value [NullSafeMutableLiveData]
+            when(str) {
+            ^
+3 errors, 0 warnings
+        """
+        )
+    }
+
+    @Test
+    fun methodCallTest() {
+        check(
+            kotlin(
+                """
+                package com.example
+
+                import androidx.lifecycle.MutableLiveData
+
+                class MyClass2
+
+                class MyClass1 {
+                    val firstLiveDataField = MutableLiveData<MyClass2>()
+                    val secondLiveDataField = MutableLiveData<MyClass2?>()
+
+                    fun foo() {
+                        firstLiveDataField.value = nullableMethod1()
+                        firstLiveDataField.value = nullableMethod2()
+                        firstLiveDataField.value = nonNullableMethod()
+
+                        secondLiveDataField.value = nullableMethod1()
+                        secondLiveDataField.value = nullableMethod2()
+                        secondLiveDataField.value = nonNullableMethod()
+                    }
+
+                    fun nullableMethod1() : MyClass2? = null
+                    fun nullableMethod2() = MyClass2().takeIf { false }
+                    fun nonNullableMethod() = MyClass2()
+                }
+            """
+            ).indented()
+        ).expect(
+            """
+src/com/example/MyClass2.kt:12: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = nullableMethod1()
+                                   ~~~~~~~~~~~~~~~~~
+src/com/example/MyClass2.kt:13: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = nullableMethod2()
+                                   ~~~~~~~~~~~~~~~~~
+2 errors, 0 warnings
+        """
+        ).expectFixDiffs(
+            """
+Fix for src/com/example/MyClass2.kt line 12: Change `LiveData` type to nullable:
+@@ -8 +8
+-     val firstLiveDataField = MutableLiveData<MyClass2>()
++     val firstLiveDataField = MutableLiveData<MyClass2?>()
+Fix for src/com/example/MyClass2.kt line 12: Add non-null asserted (!!) call:
+@@ -12 +12
+-         firstLiveDataField.value = nullableMethod1()
++         firstLiveDataField.value = nullableMethod1()!!
+Fix for src/com/example/MyClass2.kt line 13: Change `LiveData` type to nullable:
+@@ -8 +8
+-     val firstLiveDataField = MutableLiveData<MyClass2>()
++     val firstLiveDataField = MutableLiveData<MyClass2?>()
+Fix for src/com/example/MyClass2.kt line 13: Add non-null asserted (!!) call:
+@@ -13 +13
+-         firstLiveDataField.value = nullableMethod2()
++         firstLiveDataField.value = nullableMethod2()!!
+        """
+        )
+    }
+
+    @Test
+    fun javaLambdaTest() {
+        check(
+            java(
+                """
+                    package com.example;
+
+                    public interface Consumer<T> {
+                        void accept(T t) throws Exception;
+                    }
+
+            """
+            ).indented(),
+            java(
+                """
+                    package com.example;
+
+                    public class ConsumerCaller<T> {
+                        void bar(Consumer<T> consumer){
+                        }
+                    }
+
+            """
+            ).indented(),
+            kotlin(
+                """
+                package com.example
+
+                import androidx.lifecycle.MutableLiveData
+
+                class MyClass2
+
+                class MyClass1 {
+                    val firstLiveDataField = MutableLiveData<MyClass2>()
+
+                    fun foo() {
+                        ConsumerCaller().bar {
+                            firstLiveDataField.value = it
+                        }
+                    }
+                }
+            """
+            ).indented()
+        ).expectClean()
+    }
+
+    @Test
+    fun tryCatchTest() {
+        check(
+            kotlin(
+                """
+                package com.example
+
+                import androidx.lifecycle.MutableLiveData
+
+                class MyClass1 {
+                    val firstLiveDataField = MutableLiveData<Int>()
+
+                    fun foo() {
+                        firstLiveDataField.value = try {
+                            Integer.parseInt("bar")
+                        } catch (_: NumberFormatException) {
+                            null
+                        } catch (_: RuntimeException) {
+                            0
+                        } catch (_: Throwable) {
+                            123
+                        }
+                        firstLiveDataField.value = try {
+                            Integer.parseInt("bar")
+                        } catch (_: RuntimeException) {
+                            0
+                        } catch (_: Throwable) {
+                            123
+                        }
+                    }
+                }
+            """
+            ).indented()
+        ).expect(
+            """
+src/com/example/MyClass1.kt:9: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = try {
+                                   ^
+1 errors, 0 warnings
+            """.trimIndent()
+        )
+    }
+
+    @Test
+    fun elvisTest() {
+        check(
+            kotlin(
+                """
+                package com.example
+
+                import androidx.lifecycle.MutableLiveData
+
+                class MyClass1 {
+                    val firstLiveDataField = MutableLiveData<String>()
+
+                    fun foo() {
+                        var nullStr: String? = null
+                        var notNullStr: String? = null
+                        firstLiveDataField.value = nullStr ?: ""
+                        firstLiveDataField.value = nullStr ?: "" ?: null
+                        firstLiveDataField.value = "" ?: ""
+                        firstLiveDataField.value = nullStr ?: nullStr
+                        firstLiveDataField.value = nullStr ?: null
+
+                        firstLiveDataField.value = notNullStr ?: ""
+                        firstLiveDataField.value = notNullStr ?: "" ?: null
+                        firstLiveDataField.value = "" ?: ""
+                        firstLiveDataField.value = notNullStr ?: nullStr
+                        firstLiveDataField.value = notNullStr ?: null
+                    }
+                }
+            """
+            ).indented()
+        ).expect(
+            """
+src/com/example/MyClass1.kt:12: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = nullStr ?: "" ?: null
+                                   ~~~~~~~~~~~~~~~~~~~~~
+src/com/example/MyClass1.kt:14: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = nullStr ?: nullStr
+                                   ~~~~~~~~~~~~~~~~~~
+src/com/example/MyClass1.kt:15: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = nullStr ?: null
+                                   ~~~~~~~~~~~~~~~
+src/com/example/MyClass1.kt:18: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = notNullStr ?: "" ?: null
+                                   ~~~~~~~~~~~~~~~~~~~~~~~~
+src/com/example/MyClass1.kt:20: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = notNullStr ?: nullStr
+                                   ~~~~~~~~~~~~~~~~~~~~~
+src/com/example/MyClass1.kt:21: Error: Expected non-nullable value [NullSafeMutableLiveData]
+        firstLiveDataField.value = notNullStr ?: null
+                                   ~~~~~~~~~~~~~~~~~~
+6 errors, 0 warnings
+            """.trimIndent()
+        )
+    }
+
+    @Test
+    fun constructorTest() {
+        check(
+            kotlin(
+                """
+                package com.example
+
+                import androidx.lifecycle.MutableLiveData
+
+                class MyClass1 {
+                    val firstLiveDataField = MutableLiveData<Int>(null)
+                    val thirdLiveDataField = MutableLiveData<Int?>(null)
+
+                    fun foo() {
+                        val secondLiveDataField = MutableLiveData<Int>(null)
+                        val fourLiveDataField = MutableLiveData<Int?>(null)
+                    }
+                }
+            """
+            ).indented()
+        ).expectClean()
+    }
+
+    @Test
     fun objectLiveData() {
         check(
             kotlin(
@@ -754,6 +1181,12 @@ Fix for src/com/example/MyClass2.kt line 30: Change `LiveData` type to nullable:
                 val foo = object : LiveData<Int>() {
                     private fun bar() {
                         value = 0
+                    }
+                }
+
+                val bar1 = object : LiveData<Int>() {
+                    private fun bar() {
+                        value = null
                     }
                 }
             """
