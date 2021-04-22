@@ -42,9 +42,11 @@ import org.jetbrains.kotlin.types.typeUtil.getImmediateSuperclassNotAny
 import org.jetbrains.kotlin.types.typeUtil.nullability
 import org.jetbrains.uast.UAnnotated
 import org.jetbrains.uast.UCallExpression
+import org.jetbrains.uast.UDeclaration
 import org.jetbrains.uast.UElement
 import org.jetbrains.uast.UExpression
 import org.jetbrains.uast.UReferenceExpression
+import org.jetbrains.uast.UResolvable
 import org.jetbrains.uast.UastCallKind
 import org.jetbrains.uast.isNullLiteral
 import org.jetbrains.uast.kotlin.KotlinAbstractUExpression
@@ -52,6 +54,7 @@ import org.jetbrains.uast.kotlin.KotlinUFunctionCallExpression
 import org.jetbrains.uast.kotlin.KotlinUSimpleReferenceExpression
 import org.jetbrains.uast.kotlin.KotlinUastResolveProviderService
 import org.jetbrains.uast.resolveToUElement
+import org.jetbrains.uast.toUElementOfType
 
 /**
  * Lint check for ensuring that [androidx.lifecycle.MutableLiveData] values are never null when
@@ -233,7 +236,8 @@ class NonNullableMutableLiveDataDetector : Detector(), UastScanner {
      * @return receiver of expression
      */
     private fun getDeclaration(receiver: UElement?): KtTypeReference? {
-        return (receiver?.tryResolveUDeclaration()?.sourcePsi as? KtDeclaration)?.let {
+        val declaration = (receiver as? UResolvable)?.resolve()?.toUElementOfType<UDeclaration>()
+        return (declaration?.sourcePsi as? KtDeclaration)?.let {
             val expression = it
                 .children.firstOrNull { it is KtCallExpression } as? KtCallExpression
             expression?.typeArguments?.singleOrNull()?.typeReference
